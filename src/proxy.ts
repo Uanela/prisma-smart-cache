@@ -14,7 +14,7 @@ type PrismaClient = Record<string, any>;
  *
  * @example
  * ```ts
- * import { withCache } from 'prismacache'
+ * import { withCache } from 'prisma-caching'
  * import { BentoCache, bentostore } from 'bentocache'
  * import { memoryDriver } from 'bentocache/drivers/memory'
  *
@@ -48,7 +48,7 @@ export function withCache<T extends PrismaClient>(
   bentoCache: BentoCache<any>,
   options: WithCacheOptions = {}
 ): T {
-  const handler = new PrismaCache(prismaClient, bentoCache, options);
+  const handler = new PrismaCache(bentoCache, options);
 
   return new Proxy(prismaClient, {
     get(target, modelName) {

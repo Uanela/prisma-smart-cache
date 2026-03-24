@@ -39,15 +39,11 @@ export class PrismaCache {
   /** inverted index: modelName → Set<cacheKey> */
   private readonly index = new Map<string, Set<string>>();
 
-  constructor(
-    prismaClient: { _baseDmmf?: { datamodel: any } },
-    bentoCache: BentoCache<any>,
-    options: WithCacheOptions = {}
-  ) {
+  constructor(bentoCache: BentoCache<any>, options: WithCacheOptions = {}) {
     this.cache = bentoCache;
     this.defaultTtl = options.ttl ?? 60;
     this.defaultTags = options.tags ?? [];
-    this.relationGraph = new RelationGraph(prismaClient);
+    this.relationGraph = new RelationGraph();
   }
 
   async handleRead<TArgs extends PrismaArgsWithCache, TResult>(

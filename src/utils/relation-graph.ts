@@ -1,4 +1,5 @@
 import type { DMMFDatamodel } from "../types";
+import * as prismaClient from "@prisma/client";
 
 export class RelationGraph {
   /** modelName → Set<relatedModelName> */
@@ -7,8 +8,10 @@ export class RelationGraph {
   /** modelName → Map<fieldName, relatedModelName> */
   private readonly fieldMap: Map<string, Map<string, string>>;
 
-  constructor(prismaClient: { _baseDmmf?: { datamodel: DMMFDatamodel } }) {
-    const datamodel = prismaClient._baseDmmf?.datamodel ?? { models: [] };
+  constructor() {
+    const datamodel = (prismaClient as any).Prisma.dmmf.datamodel ?? {
+      models: [],
+    };
     const { graph, fieldMap } = this.build(datamodel);
     this.graph = graph;
     this.fieldMap = fieldMap;
