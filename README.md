@@ -15,6 +15,36 @@ Drop it in. No schema changes. No boilerplate. Your queries get faster immediate
 
 ---
 
+## Quick start
+
+```bash
+npm install prisma-smart-cache bentocache
+```
+
+```ts
+import { PrismaClient } from "@prisma/client";
+import { BentoCache, bentostore } from "bentocache";
+import { memoryDriver } from "bentocache/drivers/memory";
+import { smartCache } from "prisma-smart-cache";
+
+const bento = new BentoCache({
+  default: "fast",
+  stores: {
+    fast: bentostore().useL1Layer(memoryDriver()),
+  },
+});
+
+// Wrap your client. That's it.
+const prisma = smartCache(new PrismaClient(), bento, { ttl: 60 });
+
+// All your existing queries work as-is — and are now cached.
+const users = await prisma.user.findMany();
+```
+
+No migrations. No schema changes. Works with your existing Prisma setup.
+
+---
+
 ## The problem
 
 In production, your database is never on the same machine as your app. Cloud hosting, serverless Postgres, cross-region deployments — **50ms to 300ms+ of round-trip latency per query is the norm**.
@@ -77,36 +107,6 @@ await prisma.author.update({
 ### Stampede protection
 
 When a cache key expires under heavy traffic, thousands of requests don't all hit the database at once. BentoCache's underlying lock mechanism ensures only one request rehydrates the cache — the rest wait and get served from it.
-
----
-
-## Quick start
-
-```bash
-npm install prisma-smart-cache bentocache
-```
-
-```ts
-import { PrismaClient } from "@prisma/client";
-import { BentoCache, bentostore } from "bentocache";
-import { memoryDriver } from "bentocache/drivers/memory";
-import { smartCache } from "prisma-smart-cache";
-
-const bento = new BentoCache({
-  default: "fast",
-  stores: {
-    fast: bentostore().useL1Layer(memoryDriver()),
-  },
-});
-
-// Wrap your client. That's it.
-const prisma = smartCache(new PrismaClient(), bento, { ttl: 60 });
-
-// All your existing queries work as-is — and are now cached.
-const users = await prisma.user.findMany();
-```
-
-No migrations. No schema changes. Works with your existing Prisma setup.
 
 ---
 
