@@ -127,6 +127,46 @@ const posts = await prisma.post.findMany({
 
 ---
 
+## Transactions
+
+Interactive transactions receive a cache-aware transaction client by default. Writes are collected while the transaction is running and cache invalidation is flushed only after the transaction commits successfully. If the transaction rolls back, no invalidation is performed.
+
+```ts
+await prisma.$transaction(async (tx) => {
+  await tx.user.update({
+    where: { id: 1 },
+    data: { name: "Ada" },
+  });
+});
+```
+
+If you need Prisma's original transaction client inside an interactive transaction, disable smart cache for that transaction:
+
+```ts
+await prisma.$transaction(
+  async (tx) => {
+    await tx.user.update({
+      where: { id: 1 },
+      data: { name: "Ada" },
+    });
+  },
+  { smartCache: { enabled: false } }
+);
+```
+
+For array transactions, Prisma requires every array element to be a Prisma Client promise. Cached operations return regular promises, so use `$raw` when building the array:
+
+```ts
+await prisma.$transaction([
+  prisma.$raw.user.findMany({ where: { active: true } }),
+  prisma.$raw.user.create({ data: { name: "Ada" } }),
+]);
+```
+
+Use interactive transactions when you need automatic cache invalidation for transactional writes.
+
+---
+
 ## Production setup — L1 + L2 (Redis)
 
 For production, combine in-memory (L1) and Redis (L2). Hot data stays in local RAM. Redis keeps everything consistent across instances.
