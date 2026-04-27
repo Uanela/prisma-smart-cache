@@ -53,4 +53,14 @@ export interface DMMFDatamodel {
 /** Prisma args extended with optional cache option */
 export type PrismaArgsWithCache<T extends object = object> = T & {
   cache?: CacheQueryOptions | false;
-};
+}
+
+export interface CacheMutation {
+  model: string;
+  operation: string;
+  args: Record<string, unknown>;
+}
+
+export interface HandleWriteOptions {
+  deferInvalidation?: (mutation: CacheMutation) => void;
+}

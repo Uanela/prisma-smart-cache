@@ -96,6 +96,34 @@ describe("PrismaSmartCache", () => {
     expect(mockBento.deleteByTag).toHaveBeenCalledWith({ tags: ["user"] });
   });
 
+  test("handleWrite can defer invalidation for transaction commits", async () => {
+    const data = { id: 1 };
+    const deferInvalidation = jest.fn();
+    mockOriginalFn.mockResolvedValue(data);
+
+    const result = await handler.handleWrite(
+      "User",
+      "update",
+      { data: { name: "new" } },
+      mockOriginalFn,
+      { deferInvalidation }
+    );
+
+    expect(result).toBe(data);
+    expect(deferInvalidation).toHaveBeenCalledWith({
+      model: "User",
+      operation: "update",
+      args: { data: { name: "new" } },
+    });
+    expect(mockBento.deleteByTag).not.toHaveBeenCalled();
+  });
+
+  test("invalidate flushes deferred transaction invalidation", async () => {
+    await handler.invalidate("User", "update", { data: { name: "new" } });
+
+    expect(mockBento.deleteByTag).toHaveBeenCalledWith({ tags: ["user"] });
+  });
+
   test("invalidate handles operations without data (delete)", async () => {
     mockOriginalFn.mockResolvedValue({});
     mockRelationGraph.getRelatedModels.mockReturnValue(["profile"]);

@@ -1,8 +1,18 @@
 import type { BentoCache } from "bentocache";
-import type { PrismaArgsWithCache, WithCacheOptions } from "./types";
+import type { CacheMutation, PrismaArgsWithCache, WithCacheOptions } from "./types";
 import { PrismaSmartCache } from "./prisma-smart-cache";
 
 type PrismaClient = Record<string, any>;
+
+interface SmartCacheTransactionOptions {
+  smartCache?: {
+    enabled?: boolean;
+  };
+}
+
+interface ProxyRuntimeOptions {
+  deferInvalidation?: (mutation: CacheMutation) => void;
+}
 
 /**
  * Extends a Prisma operation function to include our custom cache options.
@@ -22,6 +32,16 @@ type CachedModel<M> = {
   [K in keyof M]: CacheableFunction<M[K]>;
 };
 
+type CachedTransaction<T> = T extends {
+  $transaction: (...args: infer A) => infer R;
+}
+  ? ((...args: A) => R) &
+      (<TResult>(
+        fn: (tx: PrismaWithCache<any>) => Promise<TResult>,
+        options?: SmartCacheTransactionOptions & Record<string, any>
+      ) => Promise<TResult>)
+  : never;
+
 /**
  * The final Result Type that adds .cache to every model method
  */
@@ -31,6 +51,9 @@ export type PrismaWithCache<T> = {
       ? T[K]
       : CachedModel<T[K]>
     : T[K];
+} & {
+  $raw: T;
+  $transaction: CachedTransaction<T>;
 };
 
 /**
@@ -79,50 +102,153 @@ export function smartCache<T extends PrismaClient>(
 ): PrismaWithCache<T> {
   const handler = new PrismaSmartCache(bentoCache, options);
 
-  return new Proxy(prismaClient, {
-    get(target, modelName) {
-      const modelDelegate = (target as any)[modelName];
+  const wrapClient = <TClient extends PrismaClient>(
+    client: TClient,
+    runtimeOptions: ProxyRuntimeOptions = {}
+  ): PrismaWithCache<TClient> =>
+    new Proxy(client, {
+      get(target, modelName) {
+        const modelDelegate = (target as any)[modelName];
 
-      // only intercept model delegates — skip $connect, $disconnect, _baseDmmf, etc.
-      if (
-        typeof modelName !== "string" ||
-        modelName.startsWith("$") ||
-        modelName.startsWith("_") ||
-        typeof modelDelegate !== "object" ||
-        modelDelegate === null
-      ) {
-        return modelDelegate;
-      }
+        // expose the original client for operations that must preserve PrismaPromise
+        if (modelName === "$raw") {
+          return new Proxy(target, {
+            get(rawTarget, rawModelName) {
+              const rawModelDelegate = (rawTarget as any)[rawModelName];
 
-      // second-level proxy: intercept operations on the model delegate
-      return new Proxy(modelDelegate, {
-        get(modelTarget, operation) {
-          const originalFn = (modelTarget as any)[operation];
+              // skip internal properties on the raw passthrough client
+              if (
+                typeof rawModelName !== "string" ||
+                rawModelName.startsWith("$") ||
+                rawModelName.startsWith("_") ||
+                typeof rawModelDelegate !== "object" ||
+                rawModelDelegate === null
+              ) {
+                return rawModelDelegate;
+              }
 
-          if (
-            typeof operation !== "string" ||
-            typeof originalFn !== "function"
-          ) {
-            return originalFn;
-          }
+              return new Proxy(rawModelDelegate, {
+                get(rawModelTarget, rawOperation) {
+                  const rawOriginalFn = (rawModelTarget as any)[rawOperation];
 
-          if (handler.isReadOperation(operation)) {
-            return (args: any) =>
-              handler.handleRead(modelName, operation, args, (cleanArgs: any) =>
-                originalFn.call(modelTarget, cleanArgs)
-              );
-          }
+                  // raw operations bypass cache but strip our custom cache option
+                  if (
+                    typeof rawOperation !== "string" ||
+                    typeof rawOriginalFn !== "function"
+                  ) {
+                    return rawOriginalFn;
+                  }
 
-          if (handler.isWriteOperation(operation)) {
-            return (args: any) =>
-              handler.handleWrite(modelName, operation, args, (cleanArgs) =>
-                originalFn.call(modelTarget, cleanArgs)
-              );
-          }
+                  return (args: any) => {
+                    const { cache: _cacheOpts, ...prismaArgs } = (args ??
+                      {}) as PrismaArgsWithCache;
 
-          return originalFn.bind(modelTarget);
-        },
-      });
-    },
-  }) as T;
+                    return rawOriginalFn.call(rawModelTarget, prismaArgs);
+                  };
+                },
+              });
+            },
+          });
+        }
+
+        // wrap interactive transactions so tx can use smart cache and defer invalidation
+        if (modelName === "$transaction" && typeof modelDelegate === "function") {
+          return (firstArg: any, transactionOptions?: any) => {
+            // array transactions must receive PrismaPromise instances unchanged
+            if (typeof firstArg !== "function") {
+              return modelDelegate.call(target, firstArg, transactionOptions);
+            }
+
+            const useSmartCache = transactionOptions?.smartCache?.enabled !== false;
+            const {
+              smartCache: _smartCache,
+              ...prismaTransactionOptions
+            } = (transactionOptions ?? {}) as SmartCacheTransactionOptions &
+              Record<string, any>;
+            const mutations: CacheMutation[] = [];
+
+            return modelDelegate
+              .call(
+                target,
+                async (tx: PrismaClient) => {
+                  // allow opting out when user needs Prisma's raw transaction client
+                  if (!useSmartCache) {
+                    return firstArg(tx);
+                  }
+
+                  return firstArg(
+                    wrapClient(tx, {
+                      deferInvalidation: (mutation) => mutations.push(mutation),
+                    })
+                  );
+                },
+                prismaTransactionOptions
+              )
+              .then(async (result: unknown) => {
+                // flush transaction invalidations only after commit succeeds
+                if (useSmartCache && mutations?.length) {
+                  await Promise.all(
+                    mutations.map((mutation) =>
+                      handler.invalidate(
+                        mutation.model,
+                        mutation.operation,
+                        mutation.args
+                      )
+                    )
+                  );
+                }
+
+                return result;
+              });
+          };
+        }
+
+        // only intercept model delegates — skip $connect, $disconnect, _baseDmmf, etc.
+        if (
+          typeof modelName !== "string" ||
+          modelName.startsWith("$") ||
+          modelName.startsWith("_") ||
+          typeof modelDelegate !== "object" ||
+          modelDelegate === null
+        ) {
+          return modelDelegate;
+        }
+
+        // second-level proxy: intercept operations on the model delegate
+        return new Proxy(modelDelegate, {
+          get(modelTarget, operation) {
+            const originalFn = (modelTarget as any)[operation];
+
+            if (
+              typeof operation !== "string" ||
+              typeof originalFn !== "function"
+            ) {
+              return originalFn;
+            }
+
+            if (handler.isReadOperation(operation)) {
+              return (args: any) =>
+                handler.handleRead(modelName, operation, args, (cleanArgs: any) =>
+                  originalFn.call(modelTarget, cleanArgs)
+                );
+            }
+
+            if (handler.isWriteOperation(operation)) {
+              return (args: any) =>
+                handler.handleWrite(
+                  modelName,
+                  operation,
+                  args,
+                  (cleanArgs) => originalFn.call(modelTarget, cleanArgs),
+                  runtimeOptions
+                );
+            }
+
+            return originalFn.bind(modelTarget);
+          },
+        });
+      },
+    }) as PrismaWithCache<TClient>;
+
+  return wrapClient(prismaClient);
 }

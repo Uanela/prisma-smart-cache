@@ -1,6 +1,8 @@
 import type { BentoCache } from "bentocache";
 import type {
   CacheQueryOptions,
+  CacheMutation,
+  HandleWriteOptions,
   WithCacheOptions,
   PrismaArgsWithCache,
 } from "./types";
@@ -107,29 +109,35 @@ export class PrismaSmartCache {
   }
 
   async handleWrite<TArgs extends PrismaArgsWithCache, TResult>(
-    model: string,
-    operation: string,
+    model: CacheMutation['model'],
+    operation: CacheMutation['operation'],
     args: TArgs | undefined,
-    originalFn: (args: Omit<TArgs, "cache">) => Promise<TResult>
+    originalFn: (args: Omit<TArgs, "cache">) => Promise<TResult>,
+    options: HandleWriteOptions = {}
   ): Promise<TResult> {
     const { cache: _cacheOpts, ...prismaArgs } = (args ??
       {}) as PrismaArgsWithCache;
 
     const result = await originalFn(prismaArgs as Omit<TArgs, "cache">);
-
-    await this.invalidate(
+    const mutation: CacheMutation = {
       model,
       operation,
-      prismaArgs as Record<string, unknown>
-    );
+      args: prismaArgs as Record<string, unknown>,
+    };
+
+    if (options.deferInvalidation) {
+      options.deferInvalidation(mutation);
+    } else {
+      await this.invalidate(mutation.model, mutation.operation, mutation.args);
+    }
 
     return result;
   }
 
-  private async invalidate(
-    model: string,
-    operation: string,
-    args: Record<string, unknown>
+  async invalidate(
+    model: CacheMutation['model'],
+    operation: CacheMutation['operation'],
+    args: CacheMutation['args']
   ): Promise<void> {
     const modelKey = toKebab(model);
 
@@ -178,8 +186,8 @@ export class PrismaSmartCache {
   }
 
   private getMutatedFields(
-    operation: string,
-    args: Record<string, unknown>
+    operation: CacheMutation['operation'],
+    args: CacheMutation['args']
   ): string[] | null {
     if (operation === "delete" || operation === "deleteMany") return null;
 
